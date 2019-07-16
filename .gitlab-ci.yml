@@ -1,0 +1,97 @@
+stages:
+  - build
+  - review
+  - deploy
+
+variables:
+  APP_IMG_NAME: $CI_PROJECT_NAME
+
+build:
+  stage: build
+  variables:
+    DOCKER_DRIVER: overlay2
+  image: docker:latest
+  services:
+    - docker:dind
+  cache:
+    paths:
+      - node_modules/
+
+  before_script:
+    - docker info
+    - apk add yarn
+    - yarn --version
+
+  script:
+    - yarn config set strict-ssl false
+    - yarn install
+    - yarn docs:build
+    - docker build -t $APP_IMG_NAME .
+    - docker save $APP_IMG_NAME > app_img.tar
+  artifacts:
+    expire_in: 30 min
+    paths:
+      - app_img.tar
+  only:
+    - branches
+  except:
+    - master
+  tags:
+    - docker
+
+review:
+  stage: review
+  variables:
+    CONTAINER_NAME: ${CI_PROJECT_NAME}_${CI_COMMIT_REF_NAME}
+    APP_PORT: '38080'
+  dependencies:
+    - build
+  before_script:
+    - docker rm -f $CONTAINER_NAME || true
+  script:
+    - docker load < app_img.tar
+    - docker run --name $CONTAINER_NAME -d -p $APP_PORT:80 $APP_IMG_NAME
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    url: http://review.example.com:$APP_PORT
+    on_stop: review_stop
+  only:
+    - branches
+  except:
+    - master
+  tags:
+    - shell
+
+review_stop:
+  stage: review
+  variables:
+    GIT_STRAGEGY: none
+    CONTAINER_NAME: ${CI_PROJECT_NAME}_${CI_COMMIT_REF_NAME}
+  script:
+    - docker rm -f $CONTAINER_NAME
+  only:
+    - branches
+  except:
+    - master
+  when: manual
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    action: stop
+  tags:
+    - shell
+
+deploy:
+  stage: deploy
+  variables:
+    CONTAINER_NAME: ${CI_PROJECT_NAME}_${CI_COMMIT_REF_NAME}
+    APP_PORT: '48080'
+  dependencies:
+    - build
+  before_script:
+    - docker rm -f $CONTAINER_NAME || true
+  script:
+    - docker run --name $CONTAINER_NAME -d -p $APP_PORT:80 $APP_IMG_NAME
+  only:
+    - master
+  tags:
+    - shell
